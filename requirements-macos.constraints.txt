@@ -1,0 +1,2 @@
+# Keep the validated Apple Silicon/MPS build stable when regenerating the demo lock.
+torch==2.11.0

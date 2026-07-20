@@ -37,6 +37,12 @@ pip install -e ".[all]"
 
 </details>
 
+### Apple Silicon / MPS
+
+On Apple Silicon, use Python 3.11 and the macOS demo lock; do not install the
+TensorRT extras. Detailed setup and verified MPS commands are in
+[`docs/macos-mps.md`](docs/macos-mps.md).
+
 ### Set up Hugging Face token for text encoder
 
 The text encoder relies on the gated [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct) model, which requires:
@@ -189,7 +195,7 @@ More detailed information about the interactive demo is available in the [GUI Re
 #### Tab: Model
 
 - **Acceleration Mode** - Choose TensorRT, torch.compile, or none
-- **Text Encoder** - Set device + precision for the LLM2Vec text encoder. Options: `cuda / bfloat16` (default, fastest, ~14 GB VRAM), `cuda / float32` (VRAM demanding), `cpu / bfloat16`, `cpu / float32` (slower prompt encoding but requires less VRAM).
+- **Text Encoder** - Set device + precision for the LLM2Vec text encoder. The dropdown lists the available backends (`cuda`, `mps`, and/or `cpu`) with `bfloat16` and `float32`; BF16 is the practical choice for Llama 3 8B on unified-memory Macs.
 - **TRT Export Settings** - Min/opt/max tokens and export button. These settings are used to configure the exportation of the TensorRT engines for the denoiser and decoder and may slightly affect the generation speed.
 - **History Crop Length** - Maximum number of history frames input to the model (min: patch size, max: FPS x 10s - generation horizon, step size: patch size, default: min). Smaller history crop length facilitates faster adaptation to new prompts and kinematic constraints, while larger history crop length allows for longer context which helps complex semantic motion generation and smoother transitions.
 - **Future Crop Length** - Number of future frames beyond generation horizon for constraint input (min: 0, max: FPS x 10s - generation horizon, step size: patch size, default: max)
