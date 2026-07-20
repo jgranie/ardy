@@ -3,10 +3,12 @@
 
 """Part of InteractiveTimelineDemo (split for readability)."""
 
+from .accelerator import serialized_accelerator
 from .common import *  # noqa: F401,F403
 
 
 class SessionIOMixin:
+    @serialized_accelerator
     def export_session(self, client_id: int, filepath: str):
         """Export generated motion, text prompts, and constraints to a file using pickle."""
         if not self.client_active(client_id):
@@ -45,7 +47,8 @@ class SessionIOMixin:
                 # Inverse motion_tensor to get local_rot_mats and root_positions
                 if session.motion_tensor is not None and session.motion_rep is not None:
                     try:
-                        tensor_unnorm = session.motion_rep.unnormalize(session.motion_tensor)
+                        inference_motion = session.motion_tensor.to(self.device)
+                        tensor_unnorm = session.motion_rep.unnormalize(inference_motion)
                         inverse_output = session.motion_rep.inverse(tensor_unnorm, is_normalized=False)
                         motion_data["local_rot_mats"] = inverse_output["local_rot_mats"].cpu().numpy()
                         motion_data["root_positions"] = inverse_output["root_positions"].cpu().numpy()
@@ -181,6 +184,7 @@ class SessionIOMixin:
             traceback.print_exc()
             return False
 
+    @serialized_accelerator
     def load_session(self, client_id: int, filepath: str):
         """Load generated motion, text prompts, and constraints from a pickle file."""
         if not self.client_active(client_id):
@@ -237,19 +241,19 @@ class SessionIOMixin:
                         return False
 
                 session.joints_pos = torch.from_numpy(motion_data["joints_pos"]).to(
-                    dtype=torch.float32, device=self.device
+                    dtype=torch.float32, device=self.playback_device
                 )
                 if motion_data["joints_rot"] is not None:
                     session.joints_rot = torch.from_numpy(motion_data["joints_rot"]).to(
-                        dtype=torch.float32, device=self.device
+                        dtype=torch.float32, device=self.playback_device
                     )
                 if motion_data["root_velocities"] is not None:
                     session.root_velocities = torch.from_numpy(motion_data["root_velocities"]).to(
-                        dtype=torch.float32, device=self.device
+                        dtype=torch.float32, device=self.playback_device
                     )
                 if motion_data.get("motion_tensor") is not None:
                     session.motion_tensor = torch.from_numpy(motion_data["motion_tensor"]).to(
-                        dtype=torch.float32, device=self.device
+                        dtype=torch.float32, device=self.playback_device
                     )
 
                 # Restore foot_contacts; reset to None when the session has none
@@ -257,7 +261,9 @@ class SessionIOMixin:
                 # cap playback (set_frame indexes foot_contacts[:, frame_idx]).
                 fc = motion_data.get("foot_contacts")
                 session.foot_contacts = (
-                    torch.from_numpy(fc).to(dtype=torch.float32, device=self.device) if fc is not None else None
+                    torch.from_numpy(fc).to(dtype=torch.float32, device=self.playback_device)
+                    if fc is not None
+                    else None
                 )
 
                 session.max_frame_idx = import_data["max_frame_idx"]
@@ -320,7 +326,7 @@ class SessionIOMixin:
                         for frame_idx in range(start_idx, end_idx + 1):
                             keyframe_data = root_data["keyframes"][frame_idx]
                             root_pos = torch.from_numpy(keyframe_data["position"]).to(
-                                dtype=torch.float32, device=self.device
+                                dtype=torch.float32, device=self.playback_device
                             )
                             root_positions.append(root_pos)
 
@@ -339,7 +345,7 @@ class SessionIOMixin:
                     for frame_idx in isolated_frames:
                         keyframe_data = root_data["keyframes"][frame_idx]
                         root_pos = torch.from_numpy(keyframe_data["position"]).to(
-                            dtype=torch.float32, device=self.device
+                            dtype=torch.float32, device=self.playback_device
                         )
                         heading = keyframe_data.get("heading")
 
@@ -382,10 +388,10 @@ class SessionIOMixin:
                     for frame_idx, keyframe_data in fb_data["keyframes"].items():
                         # frame_idx is already an int from pickle
                         joints_pos = torch.from_numpy(keyframe_data["joints_pos"]).to(
-                            dtype=torch.float32, device=self.device
+                            dtype=torch.float32, device=self.playback_device
                         )
                         joints_rot = torch.from_numpy(keyframe_data["joints_rot"]).to(
-                            dtype=torch.float32, device=self.device
+                            dtype=torch.float32, device=self.playback_device
                         )
 
                         fb_constraint.add_keyframe(
@@ -406,10 +412,10 @@ class SessionIOMixin:
                     for frame_idx, keyframe_data in ee_data["keyframes"].items():
                         # frame_idx is already an int from pickle
                         joints_pos = torch.from_numpy(keyframe_data["joints_pos"]).to(
-                            dtype=torch.float32, device=self.device
+                            dtype=torch.float32, device=self.playback_device
                         )
                         joints_rot = torch.from_numpy(keyframe_data["joints_rot"]).to(
-                            dtype=torch.float32, device=self.device
+                            dtype=torch.float32, device=self.playback_device
                         )
                         joint_names = keyframe_data["joint_names"]
                         end_effector_type = keyframe_data["end_effector_type"]

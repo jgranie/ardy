@@ -55,6 +55,8 @@ from transformers import (
     Qwen2Config,
 )
 
+from ardy.device import select_device
+
 logger = logging.getLogger(__name__)
 
 
@@ -328,8 +330,7 @@ class LLM2Vec(nn.Module):
         if isinstance(sentences[0], str):
             sentences = [[""] + [sentence] for sentence in sentences]
 
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = select_device(device)
 
         concatenated_input_texts = []
         for sentence in sentences:

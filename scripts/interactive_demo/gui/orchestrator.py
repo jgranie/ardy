@@ -148,8 +148,7 @@ class GuiMixin:
             return
 
         text_prompt = session.gui_elements.gui_prompt_text.value
-        text_feat, _ = session.model.text_encoder([text_prompt])
-        session.text_embedding = text_feat.to(self.device)
+        self._update_text_embedding(client_id, text_prompt)
 
         session.gui_elements.gui_active_prompt_label.content = f"**Active Prompt:** {text_prompt}"
 

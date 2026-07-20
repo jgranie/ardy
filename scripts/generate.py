@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from ardy.constraints import load_constraints_lst
+from ardy.device import select_device
 from ardy.model import DEFAULT_MODEL, load_model
 from ardy.model.loading import get_env_var
 from ardy.model.registry import resolve_model_name
@@ -95,6 +96,11 @@ def parse_args():
         help="CFG scale(s): one float (text weight only) or two floats [text_weight, constraint_weight] (default: 2.0 2.0).",
     )
     parser.add_argument(
+        "--device",
+        default="auto",
+        help="Device for inference: auto (CUDA, then MPS, then CPU), cuda, mps, or cpu.",
+    )
+    parser.add_argument(
         "--checkpoints_dir",
         type=str,
         default=None,
@@ -165,10 +171,9 @@ def save_motion_npz(path: str, motion_dict: dict, fps: float, text: str) -> None
 
 
 def main():
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-
     args = parse_args()
+    device = select_device(args.device)
+    print(f"Using device: {device}")
 
     if args.num_samples < 1:
         raise ValueError(f"--num_samples must be >= 1, got {args.num_samples}.")

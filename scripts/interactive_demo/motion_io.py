@@ -3,6 +3,7 @@
 
 """Part of InteractiveTimelineDemo (split for readability)."""
 
+from .accelerator import move_to_playback_device, serialized_accelerator
 from .common import *  # noqa: F401,F403
 
 
@@ -60,7 +61,10 @@ class MotionIOMixin:
         Results are cached to .cache/motion/ so repeated loads are instant.
         """
         motion_rep_infer = session.motion_rep
-        skeleton = motion_rep_infer.skeleton
+        # Parsing is intentionally CPU-only. On MPS, use the independent
+        # visualization skeleton so hierarchy transforms do not mix CPU data
+        # with live MPS buffers.
+        skeleton = getattr(session, "viz_skeleton", None) or motion_rep_infer.skeleton
         fps = motion_rep_infer.fps
         skeleton_name = type(skeleton).__name__
 
@@ -219,6 +223,7 @@ class MotionIOMixin:
         print(f"Cached motion to {cache_path}")
         return local_rot_mats, root_trans
 
+    @serialized_accelerator
     def load_motion_from_file(self, file_path: str, session, crop_10s: bool = False) -> dict:
         """Load a motion sequence from a BVH or CSV file and convert to motion_rep features.
 
@@ -294,6 +299,34 @@ class MotionIOMixin:
         continue_from_current: bool = False,
         update_text: bool = True,
     ):
+        """Load/sample a sequence, then generate after releasing the MPS lock."""
+        loaded = self._load_sequence_locked(
+            client_id,
+            seq_data,
+            constraint_types=constraint_types,
+            continue_from_current=continue_from_current,
+            update_text=update_text,
+        )
+        if not loaded:
+            return
+
+        # Preserve lock ordering: replan_lock -> accelerator lock. Acquiring a
+        # per-session replan lock while holding the global lock can deadlock a
+        # simultaneous auto-replan from another callback thread.
+        if continue_from_current:
+            self.on_replan_trigger(client_id)
+        else:
+            self.restart(client_id)
+
+    @serialized_accelerator
+    def _load_sequence_locked(
+        self,
+        client_id: int,
+        seq_data,
+        constraint_types: list = None,
+        continue_from_current: bool = False,
+        update_text: bool = True,
+    ):
         """Load a sequence from the dataset and sample constraints of specified types.
 
         Args:
@@ -335,7 +368,9 @@ class MotionIOMixin:
                 motion_unnorm = session.motion_rep.unnormalize(motion.unsqueeze(0))  # [1, T, D]
 
                 # Get current motion state (unnormalized)
-                current_motion = session.motion_tensor[0:1, current_frame_idx : current_frame_idx + 1]  # [1, 1, D]
+                current_motion = session.motion_tensor[
+                    0:1, current_frame_idx : current_frame_idx + 1
+                ].to(self.device)  # [1, 1, D]
                 current_motion_unnorm = session.motion_rep.unnormalize(current_motion)
 
                 # Extract current heading angle
@@ -366,6 +401,8 @@ class MotionIOMixin:
         )
         joints_pos = inverse_output["posed_joints"]  # [T, J, 3]
         joints_rot = inverse_output["global_rot_mats"]  # [T, J, 3, 3]
+        joints_pos = move_to_playback_device(joints_pos, self.device)
+        joints_rot = move_to_playback_device(joints_rot, self.device)
 
         # Clear old constraints (and their reference ghost) BEFORE storing the
         # new reference below — clear_constraints() resets ref_joints_pos, so
@@ -587,9 +624,4 @@ class MotionIOMixin:
             color="green",
         )
 
-        # Only restart if not continuing from current frame
-        if not continue_from_current:
-            self.restart(client_id)
-        else:
-            # trigger replan
-            self.on_replan_trigger(client_id)
+        return True

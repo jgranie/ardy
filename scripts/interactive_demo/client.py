@@ -115,16 +115,16 @@ class ClientMixin:
             client.flush()
 
         try:
-            self.load_model(client.client_id, DEFAULT_MODEL_DIR, progress=report_progress)
+            model = self.load_model_and_restart(
+                client.client_id,
+                DEFAULT_MODEL_DIR,
+                gui_elements.gui_prompt_text.value,
+                progress=report_progress,
+                seed=gui_elements.gui_seed.value,
+            )
 
             # Initialize text embedding and generate initial motion
-            if session.model is not None:
-                report_progress("Generating initial motion...")
-                seed_everything(gui_elements.gui_seed.value)
-                text_feat, _ = session.model.text_encoder([gui_elements.gui_prompt_text.value])
-                session.text_embedding = text_feat.to(self.device)
-                # Generate initial motion
-                self.restart(client.client_id)
+            if model is not None:
                 loading_notif.title = "Model loaded"
                 loading_notif.body = "Model loaded successfully!"
                 loading_notif.color = "green"

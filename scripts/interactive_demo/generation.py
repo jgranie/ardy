@@ -3,11 +3,13 @@
 
 """Part of InteractiveTimelineDemo (split for readability)."""
 
+from .accelerator import move_playback_tensors, serialized_accelerator
 from .common import *  # noqa: F401,F403
 from .window_budget import compute_window_num_frames
 
 
 class GenerationMixin:
+    @serialized_accelerator
     def restart(self, client_id: int):
         """Restart the demo for a client."""
         if not self.client_active(client_id):
@@ -53,6 +55,7 @@ class GenerationMixin:
         session.playing = playing
         self.set_frame(client_id, 0)
 
+    @serialized_accelerator
     def restart_from_now(self, client_id: int):
         """Restart generation from the current frame, clearing all motions after it."""
         if not self.client_active(client_id):
@@ -177,6 +180,7 @@ class GenerationMixin:
 
         return history_motion_tensor, history_start_idx, history_end_idx, history_length
 
+    @serialized_accelerator
     def _generate_step(self, client_id: int):
         """One autoregressive generation step."""
         if not self.client_active(client_id):
@@ -190,12 +194,14 @@ class GenerationMixin:
         start_time = time.time()
 
         history_motion_tensor, history_start_idx, history_end_idx, history_length = self._get_history_motion(session)
+        if history_motion_tensor is not None:
+            history_motion_tensor = history_motion_tensor.to(self.device)
         print(
             f"Generate with frame idx {session.frame_idx}, history start: {history_start_idx}, end: {history_end_idx}, length: {history_length}"
         )
 
         num_samples = session.gui_elements.gui_num_samples.value
-        text_feat = session.text_embedding.repeat(num_samples, 1, 1)
+        text_feat = session.text_embedding.to(self.device).repeat(num_samples, 1, 1)
         text_pad_mask = torch.ones(text_feat.shape[0], text_feat.shape[1], device=self.device, dtype=torch.bool)
 
         motion_mask = None
@@ -350,6 +356,23 @@ class GenerationMixin:
         )
         root_velocities = joint_velocities[:, :, session.motion_rep.skeleton.root_idx, :]
 
+        # Viser playback runs concurrently with generation. Keep its state on
+        # CPU for MPS so frame updates never enqueue Metal work; CUDA/CPU retain
+        # the tensors and placement used before this guard was introduced.
+        playback_state = move_playback_tensors(
+            self.device,
+            motion_tensor=samples,
+            joints_pos=joints_pos,
+            joints_rot=joints_rot,
+            foot_contacts=foot_contacts,
+            root_velocities=root_velocities,
+        )
+        samples = playback_state["motion_tensor"]
+        joints_pos = playback_state["joints_pos"]
+        joints_rot = playback_state["joints_rot"]
+        foot_contacts = playback_state["foot_contacts"]
+        root_velocities = playback_state["root_velocities"]
+
         # Update motion data
         with session.motion_tensor_lock:
             if session.motion_tensor is None:
@@ -359,7 +382,11 @@ class GenerationMixin:
                 session.foot_contacts = foot_contacts.clone()
                 session.root_velocities = root_velocities.clone()
                 for i in range(num_samples):
-                    self.add_character(client_id, session.motion_rep.skeleton, i)
+                    self.add_character(
+                        client_id,
+                        session.viz_skeleton or session.motion_rep.skeleton,
+                        i,
+                    )
             else:
                 session.motion_tensor = torch.cat(
                     [

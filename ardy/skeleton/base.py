@@ -127,6 +127,30 @@ class SkeletonBase(torch.nn.Module):
 
         self.hip_joint_idx = [self.bone_order_names.index(hip_joint) for hip_joint in self.hip_joint_names]
 
+    def _apply(self, fn, recurse=True):
+        """Apply a device/dtype conversion, adapting unsupported float64 MPS buffers.
+
+        Skeleton assets retain their serialized dtype when placed directly on CPU or CUDA.
+        PyTorch's MPS backend cannot represent float64 tensors, so a failed MPS conversion is
+        retried from float32 while preserving any explicit destination dtype requested by ``fn``.
+        Moving that same narrowed module back from MPS cannot restore discarded float64 precision.
+        """
+        def mps_compatible(tensor):
+            try:
+                return fn(tensor)
+            except (RuntimeError, TypeError) as error:
+                message = str(error).lower()
+                is_unsupported_mps_float64 = (
+                    tensor.dtype == torch.float64
+                    and "mps" in message
+                    and ("float64" in message or "double" in message)
+                )
+                if not is_unsupported_mps_float64:
+                    raise
+                return fn(tensor.to(dtype=torch.float32))
+
+        return super()._apply(mps_compatible, recurse=recurse)
+
     def expand_joint_names(self, joint_names):
         """Expand base EE names [LeftFoot, RightFoot, LeftHand, RightHand] actual joint names to
         constrain position and rotations.

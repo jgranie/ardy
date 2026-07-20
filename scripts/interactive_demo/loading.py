@@ -5,6 +5,12 @@
 
 from ardy.assets import skeleton_asset_path
 
+from .accelerator import (
+    create_playback_skeleton,
+    move_to_playback_device,
+    serialized_accelerator,
+    serialized_text_encoder,
+)
 from .common import *  # noqa: F401,F403
 
 
@@ -18,8 +24,56 @@ class ModelLoadingMixin:
         never loaded more than once; the result is passed into ``load_model(..., text_encoder=...)``
         on each load.
         """
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        return load_text_encoder(mode="auto", device=device)
+        return load_text_encoder(mode="auto", device=self.device)
+
+    @serialized_text_encoder
+    def _prewarm_text_encoder(self, prompts) -> None:
+        """Prewarm the shared encoder without overlapping other MPS work."""
+        self.text_encoder.prewarm(prompts)
+
+    @serialized_text_encoder
+    def _update_text_embedding(self, client_id: int, text_prompt: str) -> bool:
+        """Encode one prompt and publish thread-safe session state."""
+        if not self.client_active(client_id):
+            return False
+        session = self.client_sessions[client_id]
+        if session.model is None:
+            return False
+
+        text_feat, _ = session.model.text_encoder([text_prompt])
+        text_feat = text_feat.to(self.device)
+        session.text_embedding = move_to_playback_device(text_feat, self.device)
+        return True
+
+    @serialized_text_encoder
+    def _move_text_encoder(self, device, dtype) -> None:
+        """Move the shared encoder and release its previous allocator cache."""
+        previous_device = getattr(self.text_encoder, "_device", self.device)
+        self.text_encoder.to(device=device, dtype=dtype)
+        gc.collect()
+        clear_device_cache(previous_device)
+
+    @serialized_accelerator
+    def load_model_and_restart(
+        self,
+        client_id: int,
+        model_name: str,
+        text_prompt: str,
+        progress=None,
+        seed: int | None = None,
+    ):
+        """Atomically replace an MPS model, prompt embedding, and motion state."""
+        model = self.load_model(client_id, model_name, progress=progress)
+        if model is None:
+            return None
+
+        if progress is not None:
+            progress("Generating initial motion...")
+        if seed is not None:
+            seed_everything(seed)
+        self._update_text_embedding(client_id, text_prompt)
+        self.restart(client_id)
+        return model
 
     def get_skeleton_info(self, model_skeleton):
         """Detect skeleton type from model and return appropriate class and mesh mode.
@@ -53,6 +107,7 @@ class ModelLoadingMixin:
         print(f"Warning: Unknown skeleton type, defaulting to CoreSkeleton27")
         return CoreSkeleton27, "core_skin", "cskel27"
 
+    @serialized_accelerator
     def load_model(self, client_id: int, model_name: str, progress=None):
         """Load the motion generation model for a specific client.
 
@@ -107,6 +162,7 @@ class ModelLoadingMixin:
         # create motion_rep_infer from motion_rep
         # Detect skeleton type from loaded model
         skeleton_class, mesh_mode, skeleton_name = self.get_skeleton_info(model.motion_rep.skeleton)
+        session.viz_skeleton = create_playback_skeleton(model.motion_rep.skeleton, self.device)
         print(f"Detected skeleton: {skeleton_name} (class: {skeleton_class.__name__}, mesh_mode: {mesh_mode})")
         prev_skeleton_name = session.gui_elements.gui_skeleton_name_text.value
         session.gui_elements.gui_skeleton_name_text.value = skeleton_name
@@ -138,7 +194,7 @@ class ModelLoadingMixin:
                 if not os.path.exists(xml_path):
                     xml_path = str(skeleton_asset_path("g1skel34", "xml", "g1.xml"))
                 print(f"[Mujoco] MujocoQposConverter xml_path={xml_path}, exists={os.path.exists(xml_path)}")
-                session.mujoco_converter = MujocoQposConverter(skeleton_infer, xml_path=xml_path)
+                session.mujoco_converter = MujocoQposConverter(session.viz_skeleton, xml_path=xml_path)
                 print("[Mujoco] MujocoQposConverter initialized")
             except Exception as e:
                 print(f"[Mujoco] Could not create MujocoQposConverter: {e}")
@@ -210,9 +266,10 @@ class ModelLoadingMixin:
         # (e.g. a different horizon) keep them and just repoint at the new skeleton.
         if prev_skeleton_name and prev_skeleton_name != skeleton_name:
             self.clear_constraints(client_id)
-        # Update constraint tracks with the model's skeleton
+        # Constraint widgets and playback stay off MPS; generation constructs
+        # model constraints separately from session.motion_rep.skeleton.
         for constraint in session.constraints.values():
-            constraint.skeleton = session.motion_rep.skeleton
+            constraint.skeleton = session.viz_skeleton
 
         # Optionally accelerate inference with TRT engines or torch.compile
         compile_mode = session.gui_elements.gui_compile_mode.value
@@ -223,6 +280,8 @@ class ModelLoadingMixin:
             orig_denoiser = model.denoiser
             try:
                 if compile_mode.startswith("ONNX-TRT"):
+                    if not supports_tensorrt(self.device):
+                        raise RuntimeError("ONNX-TensorRT acceleration requires a CUDA device.")
                     engines_dir = os.path.join(model_dir, "engines")
                     # Max tokens formerly exposed via the (removed) "TRT Max Tokens"
                     # GUI control; the engine capacity is exactly the per-step

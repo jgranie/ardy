@@ -12,6 +12,7 @@ class CharactersMixin:
         if not self.client_active(client_id):
             return
         session = self.client_sessions[client_id]
+        skeleton = getattr(session, "viz_skeleton", None) or skeleton
 
         character_name = f"character{index}"
         # Use session's mesh_mode (set during model loading)
@@ -93,7 +94,7 @@ class CharactersMixin:
         if session.ref_joints_pos is None or session.motion_rep is None:
             return
 
-        skeleton = session.motion_rep.skeleton
+        skeleton = getattr(session, "viz_skeleton", None) or session.motion_rep.skeleton
         mesh_mode = getattr(session, "mesh_mode", "core_skin")
 
         # Clear existing ref character

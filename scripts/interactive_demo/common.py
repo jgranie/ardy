@@ -28,6 +28,13 @@ from ardy.constraints import (
     FullBodyConstraintSet,
     Root2DConstraintSet,
 )
+from ardy.device import (
+    available_device_types,
+    clear_device_cache,
+    device_type,
+    select_device,
+    supports_tensorrt,
+)
 from ardy.model.load_model import load_model, load_text_encoder
 from ardy.model.registry import (
     DEFAULT_HORIZON,
@@ -285,6 +292,7 @@ class ClientSession:
     model: Optional[object] = None
     motion_rep: Optional[object] = None
     motion_rep_infer: Optional[object] = None
+    viz_skeleton: Optional[SkeletonBase] = None
     model_fps: int = 30
     num_frames_per_token: int = 4
     gen_horizon_len: int = 20

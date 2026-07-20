@@ -9,6 +9,7 @@ mixins into ``InteractiveTimelineDemo`` and exposes the Hydra ``main`` entry poi
 
 import argparse
 
+from interactive_demo.accelerator import playback_device
 from interactive_demo.camera import CameraMixin
 from interactive_demo.characters import CharactersMixin
 from interactive_demo.client import ClientMixin
@@ -51,8 +52,10 @@ class InteractiveTimelineDemo(
     GuiIOMixin,
     PlaybackMixin,
 ):
-    def __init__(self, compile_model: bool = True):
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    def __init__(self, compile_model: bool = True, device=None):
+        self.device = select_device(device)
+        self.playback_device = playback_device(self.device)
+        self._accelerator_lock = threading.RLock()
         print(f"Using device: {self.device}")
 
         # Built once and reused across all model loads (core / g1 / soma).
@@ -63,7 +66,7 @@ class InteractiveTimelineDemo(
         # Prewarm the cache for the default prompt and Prompt List presets
         # on a background thread; the server must not wait on this.
         threading.Thread(
-            target=self.text_encoder.prewarm,
+            target=self._prewarm_text_encoder,
             args=([DEFAULT_PROMPT, *PRESET_PROMPTS],),
             daemon=True,
         ).start()
@@ -137,11 +140,16 @@ def main() -> None:
     parser.add_argument(
         "--no-compile",
         action="store_true",
-        help="Do not compile the model (initial backend is 'None' instead of 'ONNX-TRT (fp16)').",
+        help="Do not compile the model (initial acceleration mode is 'None').",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Device for inference: auto (CUDA, then MPS, then CPU), cuda, mps, or cpu.",
     )
     args = parser.parse_args()
 
-    demo = InteractiveTimelineDemo(compile_model=not args.no_compile)
+    demo = InteractiveTimelineDemo(compile_model=not args.no_compile, device=args.device)
     demo.run()
 
 

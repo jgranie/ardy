@@ -69,28 +69,33 @@ class GuiModelMixin:
             def _(event: viser.GuiEvent) -> None:
                 _sync_chosen_model()
 
+            _acceleration_options = ["None"]
+            if supports_tensorrt(self.device):
+                _acceleration_options.extend(["ONNX-TRT (fp16)", "ONNX-TRT (fp32)"])
+            _acceleration_options.append("torch.compile")
+            if self.compile_model:
+                _acceleration_initial = "ONNX-TRT (fp16)" if supports_tensorrt(self.device) else "torch.compile"
+            else:
+                _acceleration_initial = "None"
             g.gui_compile_mode = client.gui.add_dropdown(
                 "Acceleration",
-                options=[
-                    "None",
-                    "ONNX-TRT (fp16)",
-                    "ONNX-TRT (fp32)",
-                    "torch.compile",
-                ],
-                initial_value="ONNX-TRT (fp16)" if self.compile_model else "None",
+                options=_acceleration_options,
+                initial_value=_acceleration_initial,
             )
-            _text_encoder_options = [
-                "cuda / bfloat16",
-                "cuda / float32",
-                "cpu / bfloat16",
-                "cpu / float32",
+            _model_device = str(self.device)
+            _model_device_type = device_type(_model_device)
+            _text_encoder_devices = [
+                _model_device if device == _model_device_type else device for device in available_device_types()
             ]
-            _text_encoder_initial = "cuda / bfloat16" if torch.cuda.is_available() else "cpu / bfloat16"
+            _text_encoder_options = [
+                f"{device} / {dtype}" for device in _text_encoder_devices for dtype in ("bfloat16", "float32")
+            ]
+            _text_encoder_initial = f"{_model_device} / bfloat16"
             g.gui_text_encoder_mode = client.gui.add_dropdown(
                 "Text Encoder",
                 options=_text_encoder_options,
                 initial_value=_text_encoder_initial,
-                hint="Set device + precision for the text encoder. Switching to cpu releases CUDA memory.",
+                hint="Set device + precision for the text encoder. Switching devices releases accelerator cache memory.",
             )
 
             @g.gui_text_encoder_mode.on_update
@@ -109,15 +114,7 @@ class GuiModelMixin:
                 device_str, dtype_str = [s.strip() for s in g.gui_text_encoder_mode.value.split("/")]
                 dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float32
                 try:
-                    encoder.to(device=device_str, dtype=dtype)
-                    # Drop lingering Python refs to the old tensors, then return
-                    # cached CUDA blocks to the driver. synchronize() ensures
-                    # all in-flight ops on the old buffers have completed.
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                        torch.cuda.empty_cache()
-                        torch.cuda.reset_peak_memory_stats()
+                    self._move_text_encoder(device_str, dtype)
                 except Exception as e:
                     if notify_client:
                         notify_client.add_notification(
@@ -245,21 +242,19 @@ class GuiModelMixin:
                                 event.client.flush()
 
                     # Load model for this client
-                    success = self.load_model(
+                    success = self.load_model_and_restart(
                         client_id,
                         _chosen["model"],
+                        g.gui_prompt_text.value,
                         progress=report_progress,
                     )
 
                     if event.client:
                         if success:
                             session = self.client_sessions[client_id]
-                            text_feat, _ = session.model.text_encoder([g.gui_prompt_text.value])
-                            session.text_embedding = text_feat.to(self.device)
                             session.gui_elements.gui_active_prompt_label.content = (
                                 f"**Active Prompt:** {g.gui_prompt_text.value}"
                             )
-                            self.restart(client_id)
                             loading_notif.title = "Model loaded"
                             loading_notif.body = "Model loaded successfully!"
                             loading_notif.color = "green"

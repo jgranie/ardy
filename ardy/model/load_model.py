@@ -9,6 +9,8 @@ import torch
 from huggingface_hub import snapshot_download
 from omegaconf import OmegaConf
 
+from ardy.device import select_device
+
 from .loading import (
     DEFAULT_MODEL,
     DEFAULT_TEXT_ENCODER_URL,
@@ -122,7 +124,7 @@ def load_text_encoder(
         url: Remote service URL. When None, falls back to the TEXT_ENCODER_URL
             env var.
         fp32: Use float32 instead of the default bfloat16.
-        device: Target device. When None, uses cuda if available else cpu.
+        device: Target device. When None, uses CUDA, then MPS, then CPU.
 
     Returns:
         The instantiated text encoder placed on ``device``.
@@ -150,8 +152,7 @@ def load_text_encoder(
         conf.pop("device", None)
         text_encoder = instantiate_from_dict(conf)
 
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_device(device)
     dtype = torch.float32 if fp32 else torch.bfloat16
     return text_encoder.to(device=device, dtype=dtype)
 
@@ -177,7 +178,7 @@ def load_model(
 
     Args:
         modelname: Short key or full folder name; uses DEFAULT_MODEL if None.
-        device: Target device for the model (e.g. 'cuda', 'cpu').
+        device: Target device for the model (e.g. 'cuda', 'mps', 'cpu').
         eval_mode: If True, set model to eval mode.
         default_family: Ignored (kept for call-site compatibility).
         text_encoder: Pre-built text encoder to reuse, or False to load the
@@ -203,6 +204,7 @@ def load_model(
     """
     if modelname is None:
         modelname = DEFAULT_MODEL
+    device = select_device(device)
 
     # Local dir if CHECKPOINTS_DIR is set (arg or env), otherwise download from HF.
     checkpoints_dir = checkpoints_dir or get_env_var("CHECKPOINTS_DIR")
